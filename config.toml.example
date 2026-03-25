@@ -1,0 +1,8 @@
+[vault]
+url = # Vault url
+role_id = # Role ID
+secret_id = # Secret ID
+[vault.paths]
+params = # Path to script params
+creds = # Path to script creds
+common = # PAth to common creds

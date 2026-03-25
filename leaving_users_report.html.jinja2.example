@@ -1,0 +1,105 @@
+<style>
+    .div-text {
+        margin-left: 20px;
+        font-size: 120%;
+    }
+
+    table {
+        margin-left: 20px;
+        border-collapse: collapse;
+        width: auto;
+        font-size: 100%;
+        text-align: left;
+        border: 1px solid #ccc;
+    }
+
+    table th {
+        background-color: #ff9800;
+        color: #fff;
+        font-weight: bold;
+        padding: 5px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        border: 1px solid #ccc;
+    }
+
+    table tr:nth-child(even) td {
+        background-color: #f2f2f2;
+    }
+
+    table tr:hover td {
+        background-color: #ffedcc;
+    }
+
+    table td {
+        background-color: #fff;
+        border: 1px solid #ccc;
+        padding: 3px;
+    }
+
+</style>
+<body>
+<div class="div-text">
+    <p>
+        Hello,
+    </p>
+    <p>
+        As you are assigned as a manager of a person <b>{{ displayName }} </b> who is leaving the company soon, we would like
+        to ask you to review the
+        <br>
+        Tableau content that is presented below:
+        <br>
+        {% for site_name, resources in tableau_resources.items() %}
+            <b>{{ site_name }}</b>: {{ resources.user_content_url }} <br>
+        {% endfor %}
+        <br><br>
+        On the Tableau server, the employee is the owner of the reports
+    </p>
+</div>
+<table>
+    <tr>
+        <th>Site name</th>
+        <th>Project name</th>
+        <th>Report name</th>
+    </tr>
+    {% for site_name, resources in tableau_resources.items() %}
+        {% for wb in resources.workbooks %}
+            <tr>
+                <td>{{ site_name }}</td>
+                <td>{{ wb.project_name }}</td>
+                <td>{{ wb.name }}</td>
+            </tr>
+        {% endfor %}
+        {% for pr in resources.projects %}
+            <tr>
+                <td>{{ site_name }}</td>
+                <td>{{ pr.path }} / <b>{{ pr.name }} </b></td>
+                <td>Owner of the project</td>
+            </tr>
+        {% endfor %}
+    {% endfor %}
+</table>
+<br><br>
+<div class="div-text">
+    We would like to ask you to complete the following steps:
+    <ol>
+        <li>Review to identify what reports can be removed and what reports should be moved to the new owner</li>
+        <li>Assign the reports you want to keep to the new owners.</li>
+    </ol>
+    Please note that when you change the report owner, you should reenter and reserve the credentials to the data
+    connection.
+    <br><br>
+    If you need any assistance with the steps, you can contact our team
+    {# Replace the link below with your own support channel URL #}
+    <a href="https://your-support-channel-url">using the link.</a>
+    <br><br>
+    In case that required information isn't provided, all user's content will be moved to your personal folder,
+    and you will be assigned as the owner of the reports.
+    <br><br>
+    Best regards,
+    <br>
+    Your team
+
+</div>
+
+</body>

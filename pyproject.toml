@@ -1,0 +1,14 @@
+[project]
+name = "github-tableau-offboarding-notifier"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.14"
+dependencies = [
+    "requests~=2.31.0",
+    "typer~=0.12.3",
+    "tableauserverclient~=0.30",
+    "Jinja2~=3.1.4",
+    "zabbix-utils~=2.0.0",
+    "hvac~=2.2.0",
+    "sentry-sdk~=2.1.1",
+]
