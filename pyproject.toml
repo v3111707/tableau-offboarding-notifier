@@ -5,7 +5,7 @@ description = "Add your description here"
 requires-python = ">=3.14"
 dependencies = [
     "requests~=2.31.0",
-    "typer~=0.12.3",
+    "typer~=0.25.1",
     "tableauserverclient~=0.30",
     "Jinja2~=3.1.4",
     "zabbix-utils~=2.0.0",

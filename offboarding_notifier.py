@@ -1,27 +1,28 @@
 #!/usr/bin/env python3
 
-import requests
-import logging
-import typer
-import re
+import datetime
 import json
-import sys
+import logging
+import os
+import re
 import smtplib
 import ssl
-import os
-import datetime
+import sys
 import tomllib
-import hvac
-import sentry_sdk
-from typing import Optional
-from logging.handlers import RotatingFileHandler
-from zabbix_utils import Sender as ZabbixSender
-import tableauserverclient as TSC
-from urllib.parse import urljoin
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from logging.handlers import RotatingFileHandler
+from typing import Optional
+from urllib.parse import urljoin
+
+import hvac
+import requests
+import sentry_sdk
+import tableauserverclient as TSC
+import typer
 from jinja2 import Environment, FileSystemLoader
-from sentry_sdk.scrubber import EventScrubber, DEFAULT_DENYLIST
+from sentry_sdk.scrubber import DEFAULT_DENYLIST, EventScrubber
+from zabbix_utils import Sender as ZabbixSender
 
 SCRIPT_NAME = os.path.basename(__file__)
 
@@ -46,7 +47,7 @@ SENTRY_DENYLIST = DEFAULT_DENYLIST + [
 def init_logger(
     debug: bool = False,
     log_name: str = "main",
-    path: str = None,
+    path: str = "None",
     max_bytes: int = 20971520,
     backup_count: int = 5,
 ):
@@ -89,9 +90,16 @@ class ZabSender:
         if not self._stub:
             self.logger = logging.getLogger("main.Zabbix_sender")
             zabbix_config = open(config_file).read()
-            self._server = re.search(r"ServerActive=(.+)", zabbix_config).group(1)
+            match = re.search(r"ServerActive=(.+)", zabbix_config)
+            if match is None:
+                raise ValueError("ServerActive not found in zabbix config")
+            self._server = match.group(1)
+
             self.logger.debug(f"self.server: {self._server}")
-            self._hostname = re.search(r"Hostname=(.+)", zabbix_config).group(1)
+            match = re.search(r"Hostname=(.+)", zabbix_config)
+            if match is None:
+                raise ValueError("Hostname not found in zabbix config")
+            self._hostname = match.group(1)
             self._sender = ZabbixSender(server=self._server)
             self.logger.debug(f"self.hostname: {self._hostname}")
 
@@ -126,17 +134,23 @@ class MailStatus:
             json.dump(self._data, f)
 
     def get_first_mail_state(self, username: str):
-        if self._data.get(username) and self._data.get(username).get(self._first_mail):
+        if self._data.get(username) and self._data.get(username, {}).get(
+            self._first_mail
+        ):
             return True
         return False
 
     def get_second_mail_state(self, username: str):
-        if self._data.get(username) and self._data.get(username).get(self._second_mail):
+        if self._data.get(username) and self._data.get(username, {}).get(
+            self._second_mail
+        ):
             return True
         return False
 
     def get_third_mail_state(self, username: str):
-        if self._data.get(username) and self._data.get(username).get(self._third_mail):
+        if self._data.get(username) and self._data.get(username, {}).get(
+            self._third_mail
+        ):
             return True
         return False
 
@@ -177,11 +191,11 @@ class EmailSender:
     def __init__(
         self,
         host: str = "",
-        username: str = None,
-        password: str = None,
+        username: str = "",
+        password: str = "",
         port: int = 25,
         use_ssl: bool = True,
-        sender: str = None,
+        sender: str = "",
     ):
         self.logger = logging.getLogger(self._logger_name)
         if not sender:
@@ -195,7 +209,7 @@ class EmailSender:
         self.context = ssl.create_default_context()
 
     def send_mail(
-        self, to: list, subject: str, msg_plain: str = None, msg_html: str = None
+        self, to: list, subject: str, msg_plain: str = "", msg_html: str = ""
     ):
         message = MIMEMultipart("mixed")
         message["to"] = ", ".join(to)
@@ -288,7 +302,7 @@ class SuccessFactorsClient:
             raise exp
         self.token = resp.json()
 
-    def get_leaving_users(self, up_to: datetime):
+    def get_leaving_users(self, up_to: datetime.datetime):
         resource_path = "odata/v2/EmpJob"
         url = urljoin(self.base_url, resource_path)
         token_type = self.token["token_type"]
@@ -359,7 +373,7 @@ def cli(
         False, "--zs", show_default=True, help="Using a stub instead Zabbix send"
     ),
 ):
-    init_logger(debug=debug, path=LOGFILE_PATH)
+    init_logger(debug=bool(debug), path=LOGFILE_PATH)
     log = logging.getLogger("main")
 
     exit_code = 0
@@ -376,18 +390,18 @@ def cli(
     )
 
     log.debug(f"{vault_client.is_authenticated()=}")
-    get_common_creds = lambda x: vault_client.secrets.kv.v1.read_secret(
-        conf["vault"]["paths"]["common"] + x
-    )["data"]
 
     creds = vault_client.secrets.kv.v1.read_secret(conf["vault"]["paths"]["creds"])[
         "data"
     ]
+    mail_creds = vault_client.secrets.kv.v1.read_secret(
+        conf["vault"]["paths"]["common"] + "mail-bot"
+    )["data"]
+
     tableau_url = creds["ts_url"]
     params = vault_client.secrets.kv.v1.read_secret(conf["vault"]["paths"]["params"])[
         "data"
     ]
-    mail_creds = get_common_creds("mail-bot")
 
     sentry_sdk.init(
         dsn=params["sentry_dsn"],
@@ -402,7 +416,7 @@ def cli(
         }
     )
 
-    zab_sender = ZabSender(stub=zabbix_stub)
+    zab_sender = ZabSender(stub=bool(zabbix_stub))
     zab_sender.send(key=ZAB_KEY_HEARTBEAT, value="1")
 
     if zab_test:
