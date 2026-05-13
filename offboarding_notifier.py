@@ -205,9 +205,9 @@ def build_assertion(
     return assertion, assertion_id
 
 
-def sign_assertion(assertion, assertion_id: str, cert_pem_path: str, key_pem_path: str):
-    cert_pem = open(cert_pem_path, "rb").read()
-    key_pem = open(key_pem_path, "rb").read()
+def sign_assertion(assertion, assertion_id: str, cert_pem: str, key_pem: str):
+    # cert_pem = open(cert_pem_path, "rb").read()
+    # key_pem = open(key_pem_path, "rb").read()
 
     signer = XMLSigner(
         method=methods.enveloped,
@@ -603,11 +603,27 @@ def cli(
             )
 
     else:
+        assertion, assertion_id = build_assertion(
+            client_id=creds["hrms_client_id"],
+            user_id=creds["hrms_user_id"],
+            token_url=creds["hrms_token_url"],
+        )
+        assertion_signed = sign_assertion(
+            assertion=assertion,
+            assertion_id=assertion_id,
+            cert_pem=creds["hrms_cert_pem"],
+            key_pem=creds["hrms_key_pem"],
+        )
+        xml_bytes = etree.tostring(
+            assertion_signed, encoding="utf-8", xml_declaration=False
+        )
+        b64_assertion = base64.b64encode(xml_bytes).decode("ascii")
+
         sfc = SuccessFactorsClient(url=creds["hrms_url"])
         sfc.auth(
             company_id=creds["hrms_company_id"],
             client_id=creds["hrms_client_id"],
-            assertion=creds["hrms_assertion"],
+            assertion=b64_assertion,
         )
         users = sfc.get_leaving_users(up_to=datetime.now() + timedelta(days=30))
         log.debug(f"get_leaving_users resp:\n {users}")
