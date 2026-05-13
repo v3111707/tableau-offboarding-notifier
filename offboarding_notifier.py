@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import datetime
+import base64
 import json
 import logging
 import os
@@ -9,6 +9,8 @@ import smtplib
 import ssl
 import sys
 import tomllib
+import uuid
+from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from logging.handlers import RotatingFileHandler
@@ -21,7 +23,9 @@ import sentry_sdk
 import tableauserverclient as TSC
 import typer
 from jinja2 import Environment, FileSystemLoader
+from lxml import etree
 from sentry_sdk.scrubber import DEFAULT_DENYLIST, EventScrubber
+from signxml import XMLSigner, methods
 from zabbix_utils import Sender as ZabbixSender
 
 SCRIPT_NAME = os.path.basename(__file__)
@@ -42,6 +46,15 @@ SENTRY_DENYLIST = DEFAULT_DENYLIST + [
     "mail_creds",
     "tableau_creds",
 ]
+
+NSMAP = {
+    "saml2": "urn:oasis:names:tc:SAML:2.0:assertion",
+    "ds": "http://www.w3.org/2000/09/xmldsig#",
+}
+
+
+def iso_z(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def init_logger(
@@ -74,7 +87,7 @@ def init_logger(
     logger.debug("Set level DEBUG")
 
 
-def convert_date(date_raw: str) -> datetime.datetime:
+def convert_date(date_raw: str) -> datetime:
     if not isinstance(date_raw, str):
         raise ValueError(
             f"Invalid HRMS date type: expected str, got {type(date_raw).__name__}: {date_raw!r}"
@@ -85,7 +98,7 @@ def convert_date(date_raw: str) -> datetime.datetime:
         raise ValueError(f"Unsupported HRMS date format: {date_raw!r}")
 
     timestamp_ms = int(match.group(1))
-    return datetime.datetime.fromtimestamp(timestamp_ms / 1000)
+    return datetime.fromtimestamp(timestamp_ms / 1000)
 
 
 class ZabSender:
@@ -314,12 +327,12 @@ class SuccessFactorsClient:
             raise exp
         self.token = resp.json()
 
-    def get_leaving_users(self, up_to: datetime.datetime):
+    def get_leaving_users(self, up_to: datetime):
         resource_path = "odata/v2/EmpJob"
         url = urljoin(self.base_url, resource_path)
         token_type = self.token["token_type"]
         access_token = self.token["access_token"]
-        from_date = str(datetime.datetime.now() + datetime.timedelta(days=-7))
+        from_date = str(datetime.now() + timedelta(days=-7))
 
         params = {
             "format": "json",
@@ -458,7 +471,7 @@ def cli(
         with open(os.path.abspath(load_file), "r") as f:
             report_data = json.load(f)
         for i in report_data:
-            i["termination_date"] = datetime.datetime.strptime(
+            i["termination_date"] = datetime.strptime(
                 i["termination_date"], "%Y-%m-%d %H:%M:%S"
             )
 
@@ -469,9 +482,7 @@ def cli(
             client_id=creds["hrms_client_id"],
             assertion=creds["hrms_assertion"],
         )
-        users = sfc.get_leaving_users(
-            up_to=datetime.datetime.now() + datetime.timedelta(days=30)
-        )
+        users = sfc.get_leaving_users(up_to=datetime.now() + timedelta(days=30))
         log.debug(f"get_leaving_users resp:\n {users}")
         report_data = []
         log.info("Leaving users in hrms:")
@@ -580,7 +591,7 @@ def cli(
 
         report_data = [i for i in report_data if i["tableau_resources"]]
         for user_data in report_data:
-            days_left = (user_data["termination_date"] - datetime.datetime.now()).days
+            days_left = (user_data["termination_date"] - datetime.now()).days
             username = user_data["username"]
             log.info(f"Processing {user_data['username']}, days_left: {days_left}")
             if mail_to:

@@ -6,6 +6,8 @@ requires-python = ">=3.14"
 dependencies = [
     "requests~=2.31.0",
     "typer~=0.25.1",
+    "lxml~=6.1.0",
+    "signxml~=4.4.0",
     "tableauserverclient~=0.30",
     "Jinja2~=3.1.4",
     "zabbix-utils~=2.0.0",
