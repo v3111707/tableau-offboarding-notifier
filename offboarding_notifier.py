@@ -53,13 +53,14 @@ def init_logger(
 ):
     logger = logging.getLogger(log_name)
     logger.setLevel(logging.DEBUG)
+
+    logger.handlers.clear()
+
     sh = logging.StreamHandler(sys.stdout)
     sh.setFormatter(logging.Formatter("%(asctime)s - %(name)s: %(message)s"))
-    if debug:
-        sh.setLevel(logging.DEBUG)
-    else:
-        sh.setLevel(logging.INFO)
+    sh.setLevel(logging.DEBUG if debug else logging.INFO)
     logger.addHandler(sh)
+
     if path:
         fh = RotatingFileHandler(
             filename=path, maxBytes=max_bytes, backupCount=backup_count
@@ -67,17 +68,24 @@ def init_logger(
         fh.setFormatter(
             logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         )
-        if debug:
-            fh.setLevel(logging.DEBUG)
-        else:
-            fh.setLevel(logging.INFO)
+        fh.setLevel(logging.DEBUG if debug else logging.INFO)
         logger.addHandler(fh)
+
     logger.debug("Set level DEBUG")
 
 
-def convert_date(date: str):
-    timestamp = int(re.findall(r"\((\d+)\D", date)[0])
-    return datetime.datetime.fromtimestamp(timestamp / 1000)
+def convert_date(date_raw: str) -> datetime.datetime:
+    if not isinstance(date_raw, str):
+        raise ValueError(
+            f"Invalid HRMS date type: expected str, got {type(date_raw).__name__}: {date_raw!r}"
+        )
+
+    match = re.search(r"\((\d+)\D", date_raw)
+    if not match:
+        raise ValueError(f"Unsupported HRMS date format: {date_raw!r}")
+
+    timestamp_ms = int(match.group(1))
+    return datetime.datetime.fromtimestamp(timestamp_ms / 1000)
 
 
 class ZabSender:
@@ -194,7 +202,6 @@ class EmailSender:
         username: str = "",
         password: str = "",
         port: int = 25,
-        use_ssl: bool = True,
         sender: str = "",
     ):
         self.logger = logging.getLogger(self._logger_name)
@@ -204,7 +211,6 @@ class EmailSender:
         self.username = username
         self.password = password
         self.port = port
-        self.use_ssl = use_ssl
         self.sender = sender
         self.context = ssl.create_default_context()
 
@@ -233,7 +239,7 @@ class EmailSender:
             if self.username and self.password:
                 server.login(user=self.username, password=self.password)
 
-            self.logger.info(f'Sending mail form "{self.sender}" to; "{to}" ')
+            self.logger.info(f'Sending mail from "{self.sender}" to; "{to}" ')
             sendmail_resp = server.sendmail(
                 from_addr=self.sender, to_addrs=to, msg=message.as_string()
             )
@@ -266,6 +272,7 @@ class EmailSender:
 
 class SuccessFactorsClient:
     logger_name = "main.SFC"
+    _timeout = (5, 30)  # (connect_timeout, read_timeout)
 
     def __init__(self, url: str):
         self.log = logging.getLogger(self.logger_name)
@@ -293,7 +300,12 @@ class SuccessFactorsClient:
             "new_token": True,
         }
 
-        resp = requests.post(url=url, params=params, headers=headers)
+        resp = requests.post(
+            url=url,
+            params=params,
+            headers=headers,
+            timeout=self._timeout,
+        )
         try:
             resp.raise_for_status()
         except requests.exceptions.HTTPError as exp:
@@ -322,7 +334,12 @@ class SuccessFactorsClient:
             "accept": "application/json",
         }
 
-        resp = requests.get(url=url, headers=headers, params=params)
+        resp = requests.get(
+            url=url,
+            headers=headers,
+            params=params,
+            timeout=self._timeout,
+        )
         resp.raise_for_status()
         body = resp.json()
         users = body["d"]["results"]
@@ -341,7 +358,12 @@ class SuccessFactorsClient:
 
         params = {"format": "json", "$select": "userId,displayName,email,username"}
         self.log.debug(f"requests.get: {url}")
-        resp = requests.get(url=url, headers=headers, params=params)
+        resp = requests.get(
+            url=url,
+            headers=headers,
+            params=params,
+            timeout=self._timeout,
+        )
         try:
             resp.raise_for_status()
         except Exception as e:
@@ -365,7 +387,7 @@ def cli(
         False, "-p", show_default=True, help="Print data from HRMS and exit"
     ),
     zab_test: Optional[bool] = typer.Option(
-        False, "--zt", show_default=True, help='Send to zabbox "1"'
+        False, "--zt", show_default=True, help='Send to zabbix "1"'
     ),
     load_file: Optional[str] = typer.Option(None, "-l", show_default=True),
     safe_file: Optional[str] = typer.Option(None, "-s", show_default=True),
@@ -544,11 +566,10 @@ def cli(
                     ]
 
     with EmailSender(**mail_creds) as mail_sender:
-        _ = [
-            log.info(f"{i['username']} doesn't have any resources. Ignore")
-            for i in report_data
-            if not i["tableau_resources"]
-        ]
+        for i in report_data:
+            if not i["tableau_resources"]:
+                log.info(f"{i['username']} doesn't have any resources. Ignore")
+
         report_data = [i for i in report_data if i["tableau_resources"]]
         for user_data in report_data:
             days_left = (user_data["termination_date"] - datetime.datetime.now()).days
@@ -566,7 +587,7 @@ def cli(
             subject = f"Moving {tableau_url.replace('https://', '')} reports of the user leaving the company"
 
             if days_left < -5:
-                log.info("days_left less then -5; Clean")
+                log.info("days_left less than -5; Clean")
                 mail_states.clean(username)
             elif not user_data.get("tableau_resources"):
                 log.info("tableau_resources is None. Ignore")
@@ -590,7 +611,7 @@ def cli(
                 )
                 log.info(f"send_templated_mail resp: {resp}")
                 mail_states.set_second_mail_state(username)
-            elif days_left > 7 and not mail_states.get_first_mail_state(username):
+            elif days_left >= 7 and not mail_states.get_first_mail_state(username):
                 log.info(f"Send first mail to {recipients}")
                 resp = mail_sender.send_templated_mail(
                     to=recipients,
