@@ -10,6 +10,7 @@ import ssl
 import sys
 import tomllib
 import uuid
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -57,6 +58,20 @@ def iso_z(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def convert_date(date_raw: str) -> datetime:
+    if not isinstance(date_raw, str):
+        raise ValueError(
+            f"Invalid HRMS date type: expected str, got {type(date_raw).__name__}: {date_raw!r}"
+        )
+
+    match = re.search(r"\((\d+)\D", date_raw)
+    if not match:
+        raise ValueError(f"Unsupported HRMS date format: {date_raw!r}")
+
+    timestamp_ms = int(match.group(1))
+    return datetime.fromtimestamp(timestamp_ms / 1000)
+
+
 def init_logger(
     debug: bool = False,
     log_name: str = "main",
@@ -87,18 +102,127 @@ def init_logger(
     logger.debug("Set level DEBUG")
 
 
-def convert_date(date_raw: str) -> datetime:
-    if not isinstance(date_raw, str):
-        raise ValueError(
-            f"Invalid HRMS date type: expected str, got {type(date_raw).__name__}: {date_raw!r}"
+def build_assertion(
+    client_id: str,
+    user_id: str,
+    token_url: str,
+    expire_minutes: int = 10,
+    use_username: bool = False,
+):
+    now = datetime.now(timezone.utc)
+    not_before = now - timedelta(minutes=10)
+    not_on_or_after = now + timedelta(minutes=expire_minutes)
+    assertion_id = "_" + str(uuid.uuid4())
+    session_index = "_" + str(uuid.uuid4())
+
+    assertion = etree.Element(
+        "{urn:oasis:names:tc:SAML:2.0:assertion}Assertion",
+        nsmap=NSMAP,
+        ID=assertion_id,
+        Version="2.0",
+        IssueInstant=iso_z(now),
+    )
+
+    issuer = etree.SubElement(
+        assertion, "{urn:oasis:names:tc:SAML:2.0:assertion}Issuer"
+    )
+    issuer.text = "www.successfactors.com"
+
+    subject = etree.SubElement(
+        assertion, "{urn:oasis:names:tc:SAML:2.0:assertion}Subject"
+    )
+    name_id = etree.SubElement(
+        subject,
+        "{urn:oasis:names:tc:SAML:2.0:assertion}NameID",
+        Format="urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified",
+    )
+    name_id.text = user_id
+
+    subj_conf = etree.SubElement(
+        subject,
+        "{urn:oasis:names:tc:SAML:2.0:assertion}SubjectConfirmation",
+        Method="urn:oasis:names:tc:SAML:2.0:cm:bearer",
+    )
+    etree.SubElement(
+        subj_conf,
+        "{urn:oasis:names:tc:SAML:2.0:assertion}SubjectConfirmationData",
+        Recipient=token_url,
+        NotOnOrAfter=iso_z(not_on_or_after),
+    )
+
+    conditions = etree.SubElement(
+        assertion,
+        "{urn:oasis:names:tc:SAML:2.0:assertion}Conditions",
+        NotBefore=iso_z(not_before),
+        NotOnOrAfter=iso_z(not_on_or_after),
+    )
+    aud_restr = etree.SubElement(
+        conditions, "{urn:oasis:names:tc:SAML:2.0:assertion}AudienceRestriction"
+    )
+    audience = etree.SubElement(
+        aud_restr, "{urn:oasis:names:tc:SAML:2.0:assertion}Audience"
+    )
+    audience.text = "www.successfactors.com"
+
+    authn_stmt = etree.SubElement(
+        assertion,
+        "{urn:oasis:names:tc:SAML:2.0:assertion}AuthnStatement",
+        AuthnInstant=iso_z(now),
+        SessionIndex=session_index,
+    )
+    authn_ctx = etree.SubElement(
+        authn_stmt, "{urn:oasis:names:tc:SAML:2.0:assertion}AuthnContext"
+    )
+    authn_ctx_ref = etree.SubElement(
+        authn_ctx, "{urn:oasis:names:tc:SAML:2.0:assertion}AuthnContextClassRef"
+    )
+    authn_ctx_ref.text = (
+        "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport"
+    )
+
+    def add_attr(name: str, value: str):
+        stmt = etree.SubElement(
+            assertion, "{urn:oasis:names:tc:SAML:2.0:assertion}AttributeStatement"
         )
+        attr = etree.SubElement(
+            stmt, "{urn:oasis:names:tc:SAML:2.0:assertion}Attribute", Name=name
+        )
+        val = etree.SubElement(
+            attr,
+            "{urn:oasis:names:tc:SAML:2.0:assertion}AttributeValue",
+            attrib={"{http://www.w3.org/2001/XMLSchema-instance}type": "xs:string"},
+            nsmap={
+                "xs": "http://www.w3.org/2001/XMLSchema",
+                "xsi": "http://www.w3.org/2001/XMLSchema-instance",
+            },
+        )
+        val.text = value
 
-    match = re.search(r"\((\d+)\D", date_raw)
-    if not match:
-        raise ValueError(f"Unsupported HRMS date format: {date_raw!r}")
+    add_attr("api_key", client_id)
+    if use_username:
+        add_attr("use_username", "true")
 
-    timestamp_ms = int(match.group(1))
-    return datetime.fromtimestamp(timestamp_ms / 1000)
+    return assertion, assertion_id
+
+
+def sign_assertion(assertion, assertion_id: str, cert_pem_path: str, key_pem_path: str):
+    cert_pem = open(cert_pem_path, "rb").read()
+    key_pem = open(key_pem_path, "rb").read()
+
+    signer = XMLSigner(
+        method=methods.enveloped,
+        signature_algorithm="rsa-sha256",
+        digest_algorithm="sha256",
+        c14n_algorithm="http://www.w3.org/2001/10/xml-exc-c14n#",
+    )
+    signed = signer.sign(
+        assertion,
+        key=key_pem,
+        cert=cert_pem,
+        reference_uri=assertion_id,
+        id_attribute="ID",
+    )
+    return signed
 
 
 class ZabSender:
@@ -389,6 +513,29 @@ class SuccessFactorsClient:
         return body
 
 
+def _load_conf_and_vault(config_path: str) -> tuple[dict, dict, dict]:
+    with open(config_path, "rb") as f:
+        conf = tomllib.load(f)
+
+    vault_client = hvac.Client(url=conf["vault"]["url"])
+    vault_client.auth.approle.login(
+        role_id=conf["vault"]["role_id"],
+        secret_id=conf["vault"]["secret_id"],
+    )
+
+    creds = vault_client.secrets.kv.v1.read_secret(conf["vault"]["paths"]["creds"])[
+        "data"
+    ]
+    mail_creds = vault_client.secrets.kv.v1.read_secret(
+        conf["vault"]["paths"]["common"] + "mail-bot"
+    )["data"]
+
+    params = vault_client.secrets.kv.v1.read_secret(conf["vault"]["paths"]["params"])[
+        "data"
+    ]
+    return params, creds, mail_creds
+
+
 app = typer.Typer(add_completion=False, pretty_exceptions_enable=False)
 
 
@@ -420,31 +567,11 @@ def cli(
     log = logging.getLogger("main")
 
     exit_code = 0
-
-    with open(CONFIG_PATH, "rb") as f:
-        conf = tomllib.load(f)
+    params, creds, mail_creds = _load_conf_and_vault(CONFIG_PATH)
 
     mail_states = MailStatus("hrms_report_sender_email_states.json")
 
-    vault_client = hvac.Client(url=conf["vault"]["url"])
-    vault_client.auth.approle.login(
-        role_id=conf["vault"]["role_id"],
-        secret_id=conf["vault"]["secret_id"],
-    )
-
-    log.debug(f"{vault_client.is_authenticated()=}")
-
-    creds = vault_client.secrets.kv.v1.read_secret(conf["vault"]["paths"]["creds"])[
-        "data"
-    ]
-    mail_creds = vault_client.secrets.kv.v1.read_secret(
-        conf["vault"]["paths"]["common"] + "mail-bot"
-    )["data"]
-
     tableau_url = creds["ts_url"]
-    params = vault_client.secrets.kv.v1.read_secret(conf["vault"]["paths"]["params"])[
-        "data"
-    ]
 
     sentry_sdk.init(
         dsn=params["sentry_dsn"],
