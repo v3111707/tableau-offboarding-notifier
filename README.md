@@ -1,155 +1,237 @@
-# Tableau Offboarding Notifier
+§# Tableau Offboarding Notifier
 
-A script that automatically notifies managers about Tableau content owned by employees who are leaving the company. It queries SAP SuccessFactors for upcoming terminations, finds owned workbooks and projects on Tableau Server, and sends email reminders on a schedule.
+[![Python](https://img.shields.io/badge/Python-3.14%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Tableau Server Client](https://img.shields.io/badge/Tableau-Server%20Client-E97627?logo=tableau&logoColor=white)](https://tableau.github.io/server-client-python/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## How it works
+Tableau Offboarding Notifier is a Python CLI that helps operations teams find Tableau content owned by employees who are leaving the company and notify the right people before the content becomes orphaned.
 
-1. Loads runtime config from `config.toml` and fetches secrets from Vault.
-2. Builds and signs a SAML assertion (`signxml`) and exchanges it for SAP SuccessFactors OAuth token.
-3. Fetches employees with upcoming termination dates from SAP SuccessFactors.
-4. For each employee, scans all Tableau Server sites for owned workbooks and projects.
-5. Sends an email to recipients with a list of content that needs to be reassigned.
+The script reads upcoming termination data from SAP SuccessFactors, resolves managers and email addresses, scans every Tableau Server site for owned workbooks and projects, and sends templated HTML email reminders. Runtime configuration is stored in `config.toml`, while credentials and operational parameters are loaded from HashiCorp Vault.
 
-Emails are sent at three stages:
-- **First notice** — `days_left >= 7`
-- **Second notice** — `0 <= days_left < 7`
-- **Third notice** — `-5 <= days_left < 0`
+## What It Does
 
-When `days_left < -5`, local mail state for that user is cleaned.
+1. Loads Vault connection settings from `config.toml`.
+2. Reads SAP SuccessFactors, Tableau Server, SMTP, Sentry, and recipient settings from Vault.
+3. Builds and signs a SAML assertion with `signxml`.
+4. Exchanges the assertion for a SAP SuccessFactors OAuth token.
+5. Fetches employees with termination dates from the previous 7 days through the next 30 days.
+6. Finds Tableau workbooks and projects owned by each leaving employee across all Tableau Server sites.
+7. Sends notification emails to the employee, their manager, and configured additional recipients.
+8. Sends heartbeat and exit-code metrics to Zabbix.
 
-Email send state is tracked in `hrms_report_sender_email_states.json` to avoid duplicate sends.
+Email send state is stored in `hrms_report_sender_email_states.json` to avoid duplicate reminders.
+
+## Notification Schedule
+
+| Stage | Condition | Behavior |
+|-------|-----------|----------|
+| First notice | `days_left >= 7` | Sends the first reminder |
+| Second notice | `0 <= days_left < 7` | Sends the second reminder |
+| Third notice | `-5 <= days_left < 0` | Sends the final reminder after the termination date |
+| Cleanup | `days_left < -5` | Removes local email state for the user |
 
 ## Requirements
 
 - Python 3.14+
-- Access to SAP SuccessFactors API
-- Access to Tableau Server
-- HashiCorp Vault (for secrets)
-- SAML signing material for SuccessFactors (`cert` + `private key`)
-- Zabbix agent (for monitoring), optional via `--zs` stub flag
-- Sentry DSN (for error tracking)
+- Access to SAP SuccessFactors OData API
+- SAP SuccessFactors SAML signing certificate and private key
+- Access to Tableau Server with a service account
+- HashiCorp Vault AppRole credentials
+- SMTP account for sending email
+- Sentry DSN
+- Zabbix agent configuration, unless running with `--zs`
 
 ## Installation
 
 ```bash
-git clone https://github.com/your-org/github-tableau-offboarding-notifier.git
-cd github-tableau-offboarding-notifier
+git clone https://github.com/v3111707/tableau-offboarding-notifier.git
+cd tableau-offboarding-notifier
 python -m venv .venv
 source .venv/bin/activate
 pip install .
 ```
 
+You can also install dependencies directly from `requirements.txt`:
+
+```bash
+pip install -r requirements.txt
+```
+
 ## Configuration
 
-Copy the example config and fill in your values:
+Copy the example files and fill in organization-specific values:
 
 ```bash
 cp config.toml.example config.toml
+cp leaving_users_report.html.jinja2.example leaving_users_report.html.jinja2
 ```
 
-`config.toml` is gitignored and never committed. All sensitive credentials are read from Vault at runtime using the role/secret IDs in the config.
+`config.toml`, `leaving_users_report.html.jinja2`, JSON state files, and logs are ignored by Git.
 
-### Vault secret structure
+### `config.toml`
 
-The script expects the following secrets in Vault:
+```toml
+[vault]
+url = "https://vault.example.com"
+role_id = "..."
+secret_id = "..."
 
-**`vault.paths.creds`**
+[vault.paths]
+params = "path/to/script/params"
+creds = "path/to/script/creds"
+common = "path/to/common/"
+```
+
+### Vault Secrets
+
+The script reads three Vault locations.
+
+`vault.paths.creds`:
+
 | Key | Description |
 |-----|-------------|
 | `hrms_url` | SAP SuccessFactors base URL |
-| `hrms_company_id` | Company ID for SAML auth |
-| `hrms_client_id` | OAuth client ID |
-| `hrms_user_id` | SuccessFactors technical user ID used in SAML `NameID` |
-| `hrms_token_url` | SuccessFactors OAuth token endpoint URL |
-| `hrms_cert_pem` | X.509 certificate in PEM format (for signed assertion) |
-| `hrms_key_pem` | Private key in PEM format (for signed assertion) |
+| `hrms_company_id` | SAP SuccessFactors company ID |
+| `hrms_client_id` | OAuth client ID used as the SAML `api_key` attribute |
+| `hrms_user_id` | Technical user ID used as SAML `NameID` |
+| `hrms_token_url` | OAuth token endpoint URL |
+| `hrms_cert_pem` | X.509 certificate in PEM format |
+| `hrms_key_pem` | Private key in PEM format |
 | `ts_url` | Tableau Server URL |
 | `ts_username` | Tableau service account username |
 | `ts_password` | Tableau service account password |
 
-**`vault.paths.params`**
+`vault.paths.params`:
+
 | Key | Description |
 |-----|-------------|
 | `sentry_dsn` | Sentry DSN for error tracking |
-| `mail_to` | Comma-separated list of additional email recipients |
+| `mail_to` | Comma-separated list of additional recipients |
 
-**`vault.paths.common` + `mail-bot`**
+`vault.paths.common` + `mail-bot`:
+
 | Key | Description |
 |-----|-------------|
 | `host` | SMTP host |
 | `port` | SMTP port |
 | `username` | SMTP username |
 | `password` | SMTP password |
-| `sender` | Optional sender email; defaults to `username` if omitted |
+| `sender` | Optional sender address; defaults to `username` |
 
-## Email template
+## Email Template
 
-Copy the example template and customize it for your organization:
+The default template is `leaving_users_report.html.jinja2.example`. After copying it to `leaving_users_report.html.jinja2`, update the support link and team signature for your organization.
 
-```bash
-cp leaving_users_report.html.jinja2.example leaving_users_report.html.jinja2
-```
-
-The template receives the following variables:
+The template receives the full user record plus these important fields:
 
 | Variable | Description |
 |----------|-------------|
-| `displayName` | Full name of the leaving employee |
-| `tableau_resources` | Dict of site name → `{user_content_url, workbooks, projects}` |
+| `displayName` | Leaving employee display name |
+| `email` | Leaving employee email |
+| `manager` | Manager user object from SuccessFactors |
+| `termination_date` | Parsed termination date |
+| `tableau_url` | Tableau Server URL |
+| `tableau_resources` | Dict of site name to workbooks, projects, and Tableau content URL |
 
 ## Usage
 
-```
+```bash
 python offboarding_notifier.py [OPTIONS]
-
-Options:
-  -d, --debug        Enable debug logging
-  -m, --mail_to      Override recipients (comma-separated emails)
-  -p                 Print fetched HRMS data as JSON and exit
-  -l TEXT            Load report data from a JSON file instead of HRMS
-  -s TEXT            Save fetched HRMS data to a JSON file and exit
-  --zt               Send test value "1" to Zabbix and exit
-  --zs               Use Zabbix stub (skip actual Zabbix sends)
-  -h, --help         Show this message and exit
 ```
+
+| Option | Description |
+|--------|-------------|
+| `-d`, `--debug` | Enable debug logging |
+| `-m`, `--mail_to TEXT` | Override recipients with a comma-separated email list |
+| `-p` | Print fetched HRMS report data as JSON and exit |
+| `-l TEXT` | Load report data from a JSON file instead of querying HRMS |
+| `-s TEXT` | Save fetched HRMS report data to a JSON file and exit |
+| `--zt` | Send test value `1` to Zabbix and exit |
+| `--zs` | Use Zabbix stub and skip actual Zabbix sends |
+| `-h`, `--help` | Show CLI help |
 
 ### Examples
 
-Dry-run: fetch data from HRMS and print without sending emails:
+Fetch HRMS data, print it, and skip Zabbix sends:
+
 ```bash
 python offboarding_notifier.py -p --zs
 ```
 
-Save fetched data to a file for later use:
+Save fetched HRMS data for later testing:
+
 ```bash
 python offboarding_notifier.py -s data.json --zs
 ```
 
-Run using a previously saved file instead of querying HRMS:
+Run from a previously saved report file:
+
 ```bash
 python offboarding_notifier.py -l data.json --zs
 ```
 
-Override recipients (useful for testing):
+Send test notifications only to one mailbox:
+
 ```bash
-python offboarding_notifier.py -m your@email.com --zs
+python offboarding_notifier.py -l data.json -m your.email@example.com --zs
 ```
 
-## Running on a schedule
+## Monitoring and Runtime Files
 
-The script is designed to be run as a cron job. Example — run daily at 9:00 AM:
+The script writes logs to `offboarding_notifier.log` in the repository directory and rotates them with a 20 MiB limit and 5 backups.
 
-```cron
-0 9 * * * /path/to/.venv/bin/python /path/to/offboarding_notifier.py
-```
-
-## Monitoring
-
-The script sends two Zabbix metrics on each run:
+Zabbix metrics:
 
 | Key | Value |
 |-----|-------|
-| `hrms_report_sender_heartbeat` | `1` on start |
-| `hrms_report_sender_exit_code` | `0` on success |
+| `hrms_report_sender_heartbeat` | `1` at startup |
+| `hrms_report_sender_exit_code` | `0` on successful completion |
 
-Use `--zs` flag to disable Zabbix sends (e.g. during local testing).
+Local runtime files:
+
+| File | Purpose |
+|------|---------|
+| `config.toml` | Vault connection settings |
+| `leaving_users_report.html.jinja2` | Organization-specific email template |
+| `hrms_report_sender_email_states.json` | Notification state used to prevent duplicate sends |
+| `offboarding_notifier.log` | Rotating application log |
+
+## Running on a Schedule
+
+The script is intended to run from cron or another scheduler. Example daily run at 09:00:
+
+```cron
+0 9 * * * /path/to/tableau-offboarding-notifier/.venv/bin/python /path/to/tableau-offboarding-notifier/offboarding_notifier.py
+```
+
+Use an absolute path so `config.toml`, the email template, logs, and state files resolve consistently.
+
+## Repository Structure
+
+```text
+tableau-offboarding-notifier/
+|-- offboarding_notifier.py                  # Main Typer CLI and integration logic
+|-- config.toml.example                      # Vault configuration template
+|-- leaving_users_report.html.jinja2.example # HTML email template example
+|-- pyproject.toml                           # Python package metadata and dependencies
+|-- requirements.txt                         # pip-compatible dependency list
+|-- LICENSE                                  # MIT license
+`-- README.md                                # Project documentation
+```
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
+
+## Acknowledgements
+
+This project uses:
+
+- [Python](https://www.python.org/)
+- [Typer](https://typer.tiangolo.com/)
+- [Tableau Server Client](https://tableau.github.io/server-client-python/)
+- [SignXML](https://xml-security.github.io/signxml/)
+- [hvac](https://hvac.readthedocs.io/)
+- [Jinja](https://jinja.palletsprojects.com/)
+- [Sentry SDK](https://docs.sentry.io/platforms/python/)
+- [zabbix-utils](https://github.com/zabbix/python-zabbix-utils)
