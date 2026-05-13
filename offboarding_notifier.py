@@ -381,21 +381,29 @@ app = typer.Typer(add_completion=False, pretty_exceptions_enable=False)
 
 @app.command(context_settings=dict(help_option_names=["-h", "--help"]))
 def cli(
-    debug: Optional[bool] = typer.Option(False, "-d", "--debug", show_default=True),
+    debug: bool = typer.Option(False, "-d", "--debug", is_flag=True, show_default=True),
     mail_to: Optional[str] = typer.Option(None, "-m", "--mail_to", show_default=False),
     print_data: Optional[bool] = typer.Option(
-        False, "-p", show_default=True, help="Print data from HRMS and exit"
+        False,
+        "-p",
+        is_flag=True,
+        show_default=True,
+        help="Print data from HRMS and exit",
     ),
     zab_test: Optional[bool] = typer.Option(
-        False, "--zt", show_default=True, help='Send to zabbix "1"'
+        False, "--zt", is_flag=True, show_default=True, help='Send to zabbix "1"'
     ),
     load_file: Optional[str] = typer.Option(None, "-l", show_default=True),
     safe_file: Optional[str] = typer.Option(None, "-s", show_default=True),
-    zabbix_stub: Optional[bool] = typer.Option(
-        False, "--zs", show_default=True, help="Using a stub instead Zabbix send"
+    zabbix_stub: bool = typer.Option(
+        False,
+        "--zs",
+        is_flag=True,
+        show_default=True,
+        help="Using a stub instead Zabbix send",
     ),
 ):
-    init_logger(debug=bool(debug), path=LOGFILE_PATH)
+    init_logger(debug=debug, path=LOGFILE_PATH)
     log = logging.getLogger("main")
 
     exit_code = 0
@@ -438,7 +446,7 @@ def cli(
         }
     )
 
-    zab_sender = ZabSender(stub=bool(zabbix_stub))
+    zab_sender = ZabSender(stub=zabbix_stub)
     zab_sender.send(key=ZAB_KEY_HEARTBEAT, value="1")
 
     if zab_test:
