@@ -10,7 +10,6 @@ import ssl
 import sys
 import tomllib
 import uuid
-from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -19,14 +18,15 @@ from typing import Optional
 from urllib.parse import urljoin
 
 import hvac
+import lxml.etree as etree
 import requests
 import sentry_sdk
 import tableauserverclient as TSC
 import typer
 from jinja2 import Environment, FileSystemLoader
-from lxml import etree
 from sentry_sdk.scrubber import DEFAULT_DENYLIST, EventScrubber
-from signxml import XMLSigner, methods
+from signxml import methods
+from signxml.signer import XMLSigner
 from zabbix_utils import Sender as ZabbixSender
 
 SCRIPT_NAME = os.path.basename(__file__)

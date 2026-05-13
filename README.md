@@ -4,16 +4,20 @@ A script that automatically notifies managers about Tableau content owned by emp
 
 ## How it works
 
-1. Fetches a list of employees with upcoming termination dates from SAP SuccessFactors
-2. For each employee, scans all Tableau Server sites for owned workbooks and projects
-3. Sends an email to the employee's manager (and the employee themselves) with a list of content that needs to be reassigned
+1. Loads runtime config from `config.toml` and fetches secrets from Vault.
+2. Builds and signs a SAML assertion (`signxml`) and exchanges it for SAP SuccessFactors OAuth token.
+3. Fetches employees with upcoming termination dates from SAP SuccessFactors.
+4. For each employee, scans all Tableau Server sites for owned workbooks and projects.
+5. Sends an email to recipients with a list of content that needs to be reassigned.
 
 Emails are sent at three stages:
-- **First notice** — more than 7 days before termination
-- **Second notice** — less than 7 days before termination
-- **Third notice** — after the termination date (up to 5 days)
+- **First notice** — `days_left >= 7`
+- **Second notice** — `0 <= days_left < 7`
+- **Third notice** — `-5 <= days_left < 0`
 
-Email send state is tracked in a local JSON file to avoid duplicate sends.
+When `days_left < -5`, local mail state for that user is cleaned.
+
+Email send state is tracked in `hrms_report_sender_email_states.json` to avoid duplicate sends.
 
 ## Requirements
 
@@ -21,6 +25,7 @@ Email send state is tracked in a local JSON file to avoid duplicate sends.
 - Access to SAP SuccessFactors API
 - Access to Tableau Server
 - HashiCorp Vault (for secrets)
+- SAML signing material for SuccessFactors (`cert` + `private key`)
 - Zabbix agent (for monitoring), optional via `--zs` stub flag
 - Sentry DSN (for error tracking)
 
@@ -54,7 +59,10 @@ The script expects the following secrets in Vault:
 | `hrms_url` | SAP SuccessFactors base URL |
 | `hrms_company_id` | Company ID for SAML auth |
 | `hrms_client_id` | OAuth client ID |
-| `hrms_assertion` | SAML assertion |
+| `hrms_user_id` | SuccessFactors technical user ID used in SAML `NameID` |
+| `hrms_token_url` | SuccessFactors OAuth token endpoint URL |
+| `hrms_cert_pem` | X.509 certificate in PEM format (for signed assertion) |
+| `hrms_key_pem` | Private key in PEM format (for signed assertion) |
 | `ts_url` | Tableau Server URL |
 | `ts_username` | Tableau service account username |
 | `ts_password` | Tableau service account password |
@@ -72,6 +80,7 @@ The script expects the following secrets in Vault:
 | `port` | SMTP port |
 | `username` | SMTP username |
 | `password` | SMTP password |
+| `sender` | Optional sender email; defaults to `username` if omitted |
 
 ## Email template
 
@@ -97,8 +106,8 @@ Options:
   -d, --debug        Enable debug logging
   -m, --mail_to      Override recipients (comma-separated emails)
   -p                 Print fetched HRMS data as JSON and exit
-  -l                 Load report data from a JSON file instead of HRMS
-  -s                 Save fetched HRMS data to a JSON file and exit
+  -l TEXT            Load report data from a JSON file instead of HRMS
+  -s TEXT            Save fetched HRMS data to a JSON file and exit
   --zt               Send test value "1" to Zabbix and exit
   --zs               Use Zabbix stub (skip actual Zabbix sends)
   -h, --help         Show this message and exit
