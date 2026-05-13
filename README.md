@@ -1,4 +1,4 @@
-§# Tableau Offboarding Notifier
+# Tableau Offboarding Notifier
 
 [![Python](https://img.shields.io/badge/Python-3.14%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Tableau Server Client](https://img.shields.io/badge/Tableau-Server%20Client-E97627?logo=tableau&logoColor=white)](https://tableau.github.io/server-client-python/)
