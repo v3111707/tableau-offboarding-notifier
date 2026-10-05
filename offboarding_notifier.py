@@ -658,12 +658,15 @@ def cli(
         raise typer.Exit()
 
     if safe_file:
-        log.info(f'Opening "{os.path.abspath(safe_file)}"')
+        log.info(f'Saving to "{os.path.abspath(safe_file)}"')
+        dumped = json.dumps(
+            report_data,
+            default=lambda o: o.strftime("%Y-%m-%d %H:%M:%S")
+            if isinstance(o, datetime)
+            else str(o),
+        )
         with open(os.path.abspath(safe_file), "w") as f:
-            json.dump(
-                obj=report_data,
-                fp=f,
-            )
+            f.write(dumped)
         raise typer.Exit()
 
     tableau_auth = TSC.TableauAuth(
