@@ -11,6 +11,7 @@ import sys
 import tomllib
 import copy
 import uuid
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -53,6 +54,10 @@ NSMAP = {
     "saml2": "urn:oasis:names:tc:SAML:2.0:assertion",
     "ds": "http://www.w3.org/2000/09/xmldsig#",
 }
+
+BUSINESS_OWNER_RE = re.compile(
+    r"business\s+owner\s*[-–—:]\s*([\w.+-]+@[\w-]+(?:\.[\w-]+)+)", re.IGNORECASE
+)
 
 
 def iso_z(dt: datetime) -> str:
@@ -449,6 +454,12 @@ class ReportItem(SFUser):
     tableau_resources: dict[str, TableauSiteResources]  # key: site name
 
 
+class LeavingUserReport(SFUser):
+    manager: SFUser
+    termination_date: datetime
+    tableau_resources: dict[str, TableauSiteResources]  # key: site name
+
+
 class SuccessFactorsClient:
     logger_name: str = "main.SFC"
     _timeout: tuple[int, int] = (5, 30)  # (connect_timeout, read_timeout)
@@ -578,6 +589,29 @@ def _load_conf_and_vault(config_path: str) -> tuple[dict, dict, dict]:
         "data"
     ]
     return params, creds, mail_creds
+
+
+def get_business_owner_email(
+    resource: TSC.WorkbookItem | TSC.ProjectItem,
+) -> str | None:
+    """Return business owner's email from the resource description, if any."""
+    match = BUSINESS_OWNER_RE.search(resource.description or "")
+    return match.group(1).lower() if match else None
+
+
+def resource_roles(
+    resource: TSC.WorkbookItem | TSC.ProjectItem,
+    users_by_id: dict[str, TSC.UserItem],
+    users_by_email: dict[str, TSC.UserItem],
+) -> list[tuple[str, ResourceRole]]:
+    roles: list[tuple[str, ResourceRole]] = []
+    owner = users_by_id.get(resource.owner_id)
+    if owner:
+        roles.append((owner.name.lower(), "owner"))
+    business_owner = users_by_email.get(get_business_owner_email(resource) or "")
+    if business_owner:
+        roles.append((business_owner.name.lower(), "business_owner"))
+    return roles
 
 
 app = typer.Typer(add_completion=False, pretty_exceptions_enable=False)
@@ -727,13 +761,19 @@ def cli(
         item.pop("tableau_url", None)
         item.pop("tableau_resources", None)
 
+    leaving_users_report: list[LeavingUserReport] = [
+        {**u, "tableau_resources": {}} for u in leaving_users
+    ]
+
     with server.auth.sign_in(tableau_auth):
         for site in TSC.Pager(server.sites):
             server.auth.switch_site(site)
+            log.debug(f"Processing site: {site.name} ({server.site_id})")
             all_projects = list(TSC.Pager(server.projects))
             all_workbooks = list(TSC.Pager(server.workbooks))
             all_users = list(TSC.Pager(server.users))
             users_by_id = {i.id: i for i in all_users}
+            users_by_email = {i.email.lower(): i for i in all_users if i.email}
             projects_by_id = {i.id: i for i in all_projects}
             project_id_path = {}
             for _, project in projects_by_id.items():
@@ -749,43 +789,52 @@ def cli(
                 path.reverse()
                 project_id_path[project.id] = " / ".join(path)
 
-            log.debug(f"Processing site: {site.name} ({server.site_id})")
-            for user_data in report_data:
+            workbooks_by_user: dict[str, dict[str, TableauWorkbook]] = defaultdict(dict)
+            projects_by_user: dict[str, dict[str, TableauProject]] = defaultdict(dict)
+
+            for wb in all_workbooks:
+                for username, role in resource_roles(wb, users_by_id, users_by_email):
+                    log.debug(f"[{site.name}] workbook '{wb.project_name} / {wb.name}': {username} is {role}")
+                    wb_item = workbooks_by_user[username].setdefault(
+                        wb.id,
+                        {"name": wb.name, "project_name": wb.project_name, "roles": []},
+                    )
+                    if role not in wb_item["roles"]:
+                        wb_item["roles"].append(role)
+
+            for pr in all_projects:
+                for username, role in resource_roles(pr, users_by_id, users_by_email):
+                    log.debug(f"[{site.name}] project '{project_id_path[pr.id]} / {pr.name}': {username} is {role}")
+                    pr_item = projects_by_user[username].setdefault(
+                        pr.id,
+                        {"name": pr.name, "path": project_id_path[pr.id], "roles": []},
+                    )
+                    if role not in pr_item["roles"]:
+                        pr_item["roles"].append(role)
+
+            for user_data in leaving_users_report:
+                username = user_data["username"].lower()
+                workbooks = list(workbooks_by_user.get(username, {}).values())
+                projects = list(projects_by_user.get(username, {}).values())
+                if not (workbooks or projects):
+                    continue
                 if site.content_url:
                     user_content_url = f"{server.server_address}#/site/{site.content_url}/user/local/{user_data['username']}/content"
                 else:
                     user_content_url = f"{server.server_address}#/user/local/{user_data['username']}/content"
-
-
-
-                if any([workbooks, projects]):
-                    user_data["tableau_resources"][site.name] = {
-                        "user_content_url": user_content_url,
-                        "workbooks": [
-                            {
-                                "name": w.name,
-                                "project_name": w.project_name,
-                                "roles": ["owner"],
-                            }
-                            for w in workbooks
-                        ],
-                        "projects": [
-                            {
-                                "name": p.name,
-                                "path": project_id_path[p.id],
-                                "roles": ["owner"],
-                            }
-                            for p in projects
-                        ],
-                    }
+                user_data["tableau_resources"][site.name] = {
+                    "user_content_url": user_content_url,
+                    "workbooks": workbooks,
+                    "projects": projects,
+                }
 
     with EmailSender(**mail_creds) as mail_sender:
-        for i in report_data:
+        for i in leaving_users_report:
             if not i["tableau_resources"]:
                 log.info(f"{i['username']} doesn't have any resources. Ignore")
 
-        report_data = [i for i in report_data if i["tableau_resources"]]
-        for user_data in report_data:
+        leaving_users_report = [i for i in leaving_users_report if i["tableau_resources"]]
+        for user_data in leaving_users_report:
             days_left = (user_data["termination_date"] - datetime.now()).days
             username = user_data["username"]
             log.info(f"Processing {user_data['username']}, days_left: {days_left}")
