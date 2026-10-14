@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from logging.handlers import RotatingFileHandler
-from typing import Optional
+from typing import Any, Literal, Optional, TypedDict
 from urllib.parse import urljoin
 
 import hvac
@@ -407,15 +407,56 @@ class EmailSender:
         pass
 
 
-class SuccessFactorsClient:
-    logger_name = "main.SFC"
-    _timeout = (5, 30)  # (connect_timeout, read_timeout)
+ResourceRole = Literal["owner", "business_owner"]
 
-    def __init__(self, url: str):
-        self.log = logging.getLogger(self.logger_name)
-        self.base_url = url
-        self.base_headers = {"Content-Type": "application/x-www-form-urlencoded"}
-        self.token = {}
+
+class SFEmpJob(TypedDict):
+    userId: str
+    managerId: str
+    customDate4: str  # OData date, e.g. "/Date(1793404800000)/"
+
+
+class SFUser(TypedDict):
+    userId: str
+    displayName: str
+    email: str
+    username: str
+
+
+class TableauWorkbook(TypedDict):
+    name: str
+    project_name: str
+    roles: list[ResourceRole]
+
+
+class TableauProject(TypedDict):
+    name: str
+    path: str
+    roles: list[ResourceRole]
+
+
+class TableauSiteResources(TypedDict):
+    user_content_url: str
+    workbooks: list[TableauWorkbook]
+    projects: list[TableauProject]
+
+
+class ReportItem(SFUser):
+    manager: SFUser
+    termination_date: datetime
+    tableau_url: str
+    tableau_resources: dict[str, TableauSiteResources]  # key: site name
+
+
+class SuccessFactorsClient:
+    logger_name: str = "main.SFC"
+    _timeout: tuple[int, int] = (5, 30)  # (connect_timeout, read_timeout)
+
+    def __init__(self, url: str) -> None:
+        self.log: logging.Logger = logging.getLogger(self.logger_name)
+        self.base_url: str = url
+        self.base_headers: dict[str, str] = {"Content-Type": "application/x-www-form-urlencoded"}
+        self.token: dict[str, Any] = {}
         self.log.debug("End init")
 
     def auth(
@@ -424,7 +465,7 @@ class SuccessFactorsClient:
         client_id: str,
         assertion: str,
         grant_type: str = "urn:ietf:params:oauth:grant-type:saml2-bearer",
-    ):
+    ) -> None:
         resource_path = "oauth/token"
         url = urljoin(self.base_url, resource_path)
         headers = self.base_headers
@@ -451,7 +492,7 @@ class SuccessFactorsClient:
             raise exp
         self.token = resp.json()
 
-    def get_leaving_users(self, up_to: datetime):
+    def get_leaving_users(self, up_to: datetime) -> list[SFEmpJob]:
         resource_path = "odata/v2/EmpJob"
         url = urljoin(self.base_url, resource_path)
         token_type = self.token["token_type"]
@@ -480,9 +521,11 @@ class SuccessFactorsClient:
         resp.raise_for_status()
         body = resp.json()
         users = body["d"]["results"]
+        for user in users:
+            user.pop("__metadata", None)
         return users
 
-    def get_user_by_id(self, user_id: str):
+    def get_user_by_id(self, user_id: str) -> SFUser:
         resource_path = f"odata/v2/User('{user_id}')"
         url = urljoin(self.base_url, resource_path)
 
@@ -593,6 +636,7 @@ def cli(
         zab_sender.send(key=ZAB_KEY_EXITCODE, value="1")
         raise typer.Exit()
 
+    report_data: list[ReportItem]
     if load_file:
         log.info(f'Opening "{os.path.abspath(load_file)}"')
         with open(os.path.abspath(load_file), "r") as f:
@@ -634,14 +678,14 @@ def cli(
             manager_id = u["managerId"]
             termination_date = convert_date(u["customDate4"])
             log.info(f"Get user date: {user_id=}")
-            user_data = sfc.get_user_by_id(user_id)
+            user = sfc.get_user_by_id(user_id)
             log.info(f"Get manager date: {manager_id=}")
             manager_data = sfc.get_user_by_id(manager_id)
-            username = user_data["username"]
+            username = user["username"]
 
             report_data.append(
                 {
-                    **user_data,
+                    **user,
                     **{
                         "manager": manager_data,
                         "termination_date": termination_date,
@@ -717,18 +761,25 @@ def cli(
                 workbooks = list(TSC.Pager(server.workbooks, req_option))
                 projects = list(TSC.Pager(server.projects, req_option))
                 if any([workbooks, projects]):
-                    user_data["tableau_resources"][site.name] = {}
-                    user_data["tableau_resources"][site.name]["user_content_url"] = (
-                        user_content_url
-                    )
-                    user_data["tableau_resources"][site.name]["workbooks"] = [
-                        {"name": w.name, "project_name": w.project_name}
-                        for w in workbooks
-                    ]
-                    user_data["tableau_resources"][site.name]["projects"] = [
-                        {"name": p.name, "path": project_id_path[p.id]}
-                        for p in projects
-                    ]
+                    user_data["tableau_resources"][site.name] = {
+                        "user_content_url": user_content_url,
+                        "workbooks": [
+                            {
+                                "name": w.name,
+                                "project_name": w.project_name,
+                                "roles": ["owner"],
+                            }
+                            for w in workbooks
+                        ],
+                        "projects": [
+                            {
+                                "name": p.name,
+                                "path": project_id_path[p.id],
+                                "roles": ["owner"],
+                            }
+                            for p in projects
+                        ],
+                    }
 
     with EmailSender(**mail_creds) as mail_sender:
         for i in report_data:
