@@ -686,12 +686,10 @@ def cli(
             report_data.append(
                 {
                     **user,
-                    **{
-                        "manager": manager_data,
-                        "termination_date": termination_date,
-                        "tableau_url": tableau_url,
-                        "tableau_resources": {},
-                    },
+                    "manager": manager_data,
+                    "termination_date": termination_date,
+                    "tableau_url": tableau_url,
+                    "tableau_resources": {},
                 }
             )
             log.info(
