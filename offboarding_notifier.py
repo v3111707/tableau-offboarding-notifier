@@ -9,6 +9,7 @@ import smtplib
 import ssl
 import sys
 import tomllib
+import copy
 import uuid
 from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
@@ -625,7 +626,7 @@ def cli(
         {
             # 'severity': "high",
             "script": SCRIPT_NAME,
-            "jira": True,
+            # "jira": True,
         }
     )
 
@@ -721,19 +722,27 @@ def cli(
         use_server_version=True,
     )
 
+    leaving_users = copy.deepcopy(report_data)
+    for item in leaving_users:
+        item.pop("tableau_url", None)
+        item.pop("tableau_resources", None)
+
     with server.auth.sign_in(tableau_auth):
         for site in TSC.Pager(server.sites):
             server.auth.switch_site(site)
             all_projects = list(TSC.Pager(server.projects))
-            all_projects = {i.id: i for i in all_projects}
+            all_workbooks = list(TSC.Pager(server.workbooks))
+            all_users = list(TSC.Pager(server.users))
+            users_by_id = {i.id: i for i in all_users}
+            projects_by_id = {i.id: i for i in all_projects}
             project_id_path = {}
-            for _, project in all_projects.items():
+            for _, project in projects_by_id.items():
                 path = []
                 parent_id = project.parent_id
                 while True:
                     if parent_id:
-                        path.append(all_projects[parent_id].name)
-                        parent_id = all_projects[parent_id].parent_id
+                        path.append(projects_by_id[parent_id].name)
+                        parent_id = projects_by_id[parent_id].parent_id
                     else:
                         break
                 path.append("Home")
@@ -747,17 +756,8 @@ def cli(
                 else:
                     user_content_url = f"{server.server_address}#/user/local/{user_data['username']}/content"
 
-                req_option = TSC.RequestOptions()
-                req_option.filter.add(
-                    TSC.Filter(
-                        TSC.RequestOptions.Field.OwnerEmail,
-                        TSC.RequestOptions.Operator.Equals,
-                        user_data["email"],
-                    )
-                )
 
-                workbooks = list(TSC.Pager(server.workbooks, req_option))
-                projects = list(TSC.Pager(server.projects, req_option))
+
                 if any([workbooks, projects]):
                     user_data["tableau_resources"][site.name] = {
                         "user_content_url": user_content_url,

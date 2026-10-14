@@ -14,3 +14,10 @@ dependencies = [
     "hvac~=2.2.0",
     "sentry-sdk~=2.1.1",
 ]
+
+[dependency-groups]
+dev = [
+    "debugpy>=1.8.22",
+    "mypy>=2.4.0",
+    "pyright>=1.1.414",
+]
