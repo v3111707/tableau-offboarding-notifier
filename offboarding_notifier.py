@@ -9,14 +9,14 @@ import smtplib
 import ssl
 import sys
 import tomllib
-import copy
 import uuid
 from collections import defaultdict
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from logging.handlers import RotatingFileHandler
-from typing import Any, Literal, Optional, TypedDict
+from typing import Any, Literal, Optional, TypedDict, cast
 from urllib.parse import urljoin
 
 import hvac
@@ -64,9 +64,9 @@ def iso_z(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def convert_date(date_raw: str) -> datetime:
+def convert_date(date_raw: object) -> datetime:
     if not isinstance(date_raw, str):
-        raise ValueError(
+        raise TypeError(
             f"Invalid HRMS date type: expected str, got {type(date_raw).__name__}: {date_raw!r}"
         )
 
@@ -395,13 +395,13 @@ class EmailSender:
         env = Environment(loader=FileSystemLoader(templates_dir))
         return env.get_template(template)
 
-    def _render_data(self, data: dict, template_name: str):
+    def _render_data(self, data: Mapping[str, Any], template_name: str):
         template = self.load_template(template_name)
         rendered = template.render(**data)
         return rendered
 
     def send_templated_mail(
-        self, to: list, subject: str, template_name: str, data: dict
+        self, to: list, subject: str, template_name: str, data: Mapping[str, Any]
     ):
         body = self._render_data(data=data, template_name=template_name)
         return self.send_mail(to=to, subject=subject, msg_html=body)
@@ -448,16 +448,12 @@ class TableauSiteResources(TypedDict):
     projects: list[TableauProject]
 
 
-class ReportItem(SFUser):
+class LeavingUser(SFUser):
     manager: SFUser
     termination_date: datetime
-    tableau_url: str
-    tableau_resources: dict[str, TableauSiteResources]  # key: site name
 
 
-class LeavingUserReport(SFUser):
-    manager: SFUser
-    termination_date: datetime
+class LeavingUserReport(LeavingUser):
     tableau_resources: dict[str, TableauSiteResources]  # key: site name
 
 
@@ -606,13 +602,17 @@ def resource_roles(
     users_by_email: dict[str, TSC.UserItem],
 ) -> list[tuple[str, ResourceRole]]:
     roles: list[tuple[str, ResourceRole]] = []
-    owner = users_by_id.get(resource.owner_id)
-    if owner:
+    owner = users_by_id.get(resource.owner_id or "")
+    if owner and owner.name:
         roles.append((owner.name.lower(), "owner"))
     business_owner = users_by_email.get(get_business_owner_email(resource) or "")
-    if business_owner:
+    if business_owner and business_owner.name:
         roles.append((business_owner.name.lower(), "business_owner"))
     return roles
+
+
+def _json_default(o: object) -> str:
+    return o.isoformat() if isinstance(o, datetime) else str(o)
 
 
 app = typer.Typer(add_completion=False, pretty_exceptions_enable=False)
@@ -672,15 +672,14 @@ def cli(
         zab_sender.send(key=ZAB_KEY_EXITCODE, value="1")
         raise typer.Exit()
 
-    report_data: list[ReportItem]
+    leaving_users: list[LeavingUser]
     if load_file:
         log.info(f'Opening "{os.path.abspath(load_file)}"')
-        with open(os.path.abspath(load_file), "r") as f:
-            report_data = json.load(f)
-        for i in report_data:
-            i["termination_date"] = datetime.strptime(
-                i["termination_date"], "%Y-%m-%d %H:%M:%S"
-            )
+        with open(os.path.abspath(load_file), "r", encoding="utf-8") as f:
+            raw_data: list[dict[str, Any]] = json.load(f)
+        for i in raw_data:
+            i["termination_date"] = datetime.fromisoformat(i["termination_date"])
+        leaving_users = cast(list[LeavingUser], raw_data)
 
     else:
         assertion, assertion_id = build_assertion(
@@ -707,7 +706,7 @@ def cli(
         )
         users = sfc.get_leaving_users(up_to=datetime.now() + timedelta(days=30))
         log.debug(f"get_leaving_users resp:\n {users}")
-        report_data = []
+        leaving_users = []
         log.info("Leaving users in hrms:")
         for u in users:
             user_id = u["userId"]
@@ -719,32 +718,24 @@ def cli(
             manager_data = sfc.get_user_by_id(manager_id)
             username = user["username"]
 
-            report_data.append(
+            leaving_users.append(
                 {
                     **user,
                     "manager": manager_data,
                     "termination_date": termination_date,
-                    "tableau_url": tableau_url,
-                    "tableau_resources": {},
                 }
             )
             log.info(
                 f"User:{username},  termination date:{termination_date.date()}, manager's email: {manager_data['email']}"
             )
     if print_data:
-        print(json.dumps(report_data, indent=2, default=str))
+        print(json.dumps(leaving_users, indent=2, default=_json_default))
         raise typer.Exit()
 
     if safe_file:
         log.info(f'Saving to "{os.path.abspath(safe_file)}"')
-        dumped = json.dumps(
-            report_data,
-            default=lambda o: o.strftime("%Y-%m-%d %H:%M:%S")
-            if isinstance(o, datetime)
-            else str(o),
-        )
-        with open(os.path.abspath(safe_file), "w") as f:
-            f.write(dumped)
+        with open(os.path.abspath(safe_file), "w", encoding="utf-8") as f:
+            json.dump(leaving_users, f, indent=2, default=_json_default)
         raise typer.Exit()
 
     tableau_auth = TSC.TableauAuth(
@@ -757,11 +748,6 @@ def cli(
         use_server_version=True,
     )
 
-    leaving_users = copy.deepcopy(report_data)
-    for item in leaving_users:
-        item.pop("tableau_url", None)
-        item.pop("tableau_resources", None)
-
     leaving_users_report: list[LeavingUserReport] = [
         {**u, "tableau_resources": {}} for u in leaving_users
     ]
@@ -773,9 +759,9 @@ def cli(
             all_projects = list(TSC.Pager(server.projects))
             all_workbooks = list(TSC.Pager(server.workbooks))
             all_users = list(TSC.Pager(server.users))
-            users_by_id = {i.id: i for i in all_users}
+            users_by_id = {i.id: i for i in all_users if i.id}
             users_by_email = {i.email.lower(): i for i in all_users if i.email}
-            projects_by_id = {i.id: i for i in all_projects}
+            projects_by_id = {i.id: i for i in all_projects if i.id}
             project_id_path = {}
             for _, project in projects_by_id.items():
                 path = []
@@ -794,17 +780,18 @@ def cli(
             projects_by_user: dict[str, dict[str, TableauProject]] = defaultdict(dict)
 
             for wb in all_workbooks:
+
                 for username, role in resource_roles(wb, users_by_id, users_by_email):
                     log.debug(f"[{site.name}] workbook '{wb.project_name} / {wb.name}': {username} is {role}")
                     wb_item = workbooks_by_user[username].setdefault(
                         wb.id,
                         {
-                            "name": wb.name,
-                            "project_name": wb.project_name,
+                            "name": wb.name or "",
+                            "project_name": wb.project_name or "",
                             "project_path": (
-                                f"{project_id_path[wb.project_id]} / {wb.project_name}"
+                                f"{project_id_path[wb.project_id]} / {wb.project_name or ''}"
                                 if wb.project_id in project_id_path
-                                else wb.project_name
+                                else wb.project_name or ""
                             ),
                             "roles": [],
                         },
@@ -813,11 +800,13 @@ def cli(
                         wb_item["roles"].append(role)
 
             for pr in all_projects:
+                if not pr.id:
+                    continue
                 for username, role in resource_roles(pr, users_by_id, users_by_email):
                     log.debug(f"[{site.name}] project '{project_id_path[pr.id]} / {pr.name}': {username} is {role}")
                     pr_item = projects_by_user[username].setdefault(
                         pr.id,
-                        {"name": pr.name, "path": project_id_path[pr.id], "roles": []},
+                        {"name": pr.name or "", "path": project_id_path[pr.id], "roles": []},
                     )
                     if role not in pr_item["roles"]:
                         pr_item["roles"].append(role)
