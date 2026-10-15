@@ -37,6 +37,7 @@ CONF_NAME = "config.toml"
 SCRIPT_HOME = os.path.dirname(os.path.realpath(__file__))
 CONFIG_PATH = os.path.join(SCRIPT_HOME, CONF_NAME)
 LOGFILE_PATH = os.path.join(SCRIPT_HOME, SCRIPT_NAME.split(".")[0] + ".log")
+MAIL_STATES_PATH = os.path.join(SCRIPT_HOME, "hrms_report_sender_email_states.json")
 
 ZAB_KEY_EXITCODE = "hrms_report_sender_exit_code"
 ZAB_KEY_HEARTBEAT = "hrms_report_sender_heartbeat"
@@ -648,7 +649,7 @@ def cli(
     exit_code = 0
     params, creds, mail_creds = _load_conf_and_vault(CONFIG_PATH)
 
-    mail_states = MailStatus("hrms_report_sender_email_states.json")
+    mail_states = MailStatus(MAIL_STATES_PATH)
 
     tableau_url = creds["ts_url"]
 
@@ -780,7 +781,8 @@ def cli(
             projects_by_user: dict[str, dict[str, TableauProject]] = defaultdict(dict)
 
             for wb in all_workbooks:
-
+                if not wb.id:
+                    continue
                 for username, role in resource_roles(wb, users_by_id, users_by_email):
                     log.debug(f"[{site.name}] workbook '{wb.project_name} / {wb.name}': {username} is {role}")
                     wb_item = workbooks_by_user[username].setdefault(
