@@ -6,7 +6,7 @@
 
 Tableau Offboarding Notifier is a Python CLI that helps operations teams find Tableau content owned by employees who are leaving the company and notify the right people before the content becomes orphaned.
 
-The script reads upcoming termination data from SAP SuccessFactors, resolves managers and email addresses, scans every Tableau Server site for owned workbooks and projects, and sends templated HTML email reminders. Runtime configuration is stored in `config.toml`, while credentials and operational parameters are loaded from HashiCorp Vault.
+The script reads upcoming termination data from SAP SuccessFactors, resolves managers and email addresses, scans every Tableau Server site for workbooks and projects where the employee is the owner or the business owner, and sends templated HTML email reminders. Runtime configuration is stored in `config.toml`, while credentials and operational parameters are loaded from HashiCorp Vault.
 
 ## What It Does
 
@@ -15,8 +15,8 @@ The script reads upcoming termination data from SAP SuccessFactors, resolves man
 3. Builds and signs a SAML assertion with `signxml`.
 4. Exchanges the assertion for a SAP SuccessFactors OAuth token.
 5. Fetches employees with termination dates from the previous 7 days through the next 30 days.
-6. Finds Tableau workbooks and projects owned by each leaving employee across all Tableau Server sites.
-7. Sends notification emails to the employee, their manager, and configured additional recipients.
+6. Finds Tableau workbooks and projects on every site where each leaving employee is the owner or the business owner (see [Business Owner](#business-owner)).
+7. Sends notification emails to the employee, their manager, and configured additional recipients. Employees without any Tableau content are skipped.
 8. Sends heartbeat and exit-code metrics to Zabbix.
 
 Email send state is stored in `hrms_report_sender_email_states.json` to avoid duplicate reminders.
@@ -29,6 +29,19 @@ Email send state is stored in `hrms_report_sender_email_states.json` to avoid du
 | Second notice | `0 <= days_left < 7` | Sends the second reminder |
 | Third notice | `-5 <= days_left < 0` | Sends the final reminder after the termination date |
 | Cleanup | `days_left < -5` | Removes local email state for the user |
+
+## Business Owner
+
+Tableau has no built-in business owner field, so the script reads it from the resource description. Add a line like this to a workbook or project description:
+
+```text
+Business owner – a_doe@example.com
+```
+
+- The match is case-insensitive; `-`, `–`, `—`, and `:` are accepted as separators.
+- Only the first `Business owner` entry in a description is used.
+- The email is resolved to a Tableau user by the user's email on the same site.
+- If the employee is both the owner and the business owner of a resource, it is listed once with both roles.
 
 ## Requirements
 
@@ -126,12 +139,69 @@ The template receives the full user record plus these important fields:
 
 | Variable | Description |
 |----------|-------------|
+| `userId` | Leaving employee SuccessFactors user ID |
+| `username` | Leaving employee username |
 | `displayName` | Leaving employee display name |
 | `email` | Leaving employee email |
 | `manager` | Manager user object from SuccessFactors |
 | `termination_date` | Parsed termination date |
-| `tableau_url` | Tableau Server URL |
-| `tableau_resources` | Dict of site name to workbooks, projects, and Tableau content URL |
+| `tableau_resources` | Dict of site name to workbooks, projects, and `user_content_url` (a link built from the Tableau Server URL) |
+
+`tableau_resources` structure:
+
+```python
+{
+    "<site name>": {
+        "user_content_url": "https://tableau.example.com/#/user/local/a_doe/content",
+        "workbooks": [
+            {"name": "Sales Overview", "project_name": "Sales",
+             "project_path": "Home / Sales", "roles": ["owner", "business_owner"]},
+        ],
+        "projects": [
+            {"name": "Regional Reports", "path": "Home / Sales", "roles": ["owner"]},
+        ],
+    },
+}
+```
+
+## Email Example
+
+**Subject:** Moving tableau.example.com reports of the user leaving the company
+**To:** a_doe@example.com, j_smith@example.com, plus `mail_to` recipients
+
+> Hello,
+>
+> As you are assigned as a manager of a person **Alex Doe** who is leaving the company soon, we would like to ask you to review the Tableau content that is presented below:
+>
+> **Default**: https://tableau.example.com/#/user/local/a_doe/content
+> **Marketing**: https://tableau.example.com/#/site/marketing/user/local/a_doe/content
+>
+> On the Tableau server, the employee is the owner and/or business owner of the following content:
+>
+> | Site name | Type | Location | Name | Role |
+> |-----------|------|----------|------|------|
+> | Default | Project | Home / Sales | **Regional Reports** | Owner |
+> | Default | Workbook | Home / Sales | Churn Analysis | Owner |
+> | | | | Sales Overview | Owner, Business owner |
+> | Marketing | Workbook | Home / Campaigns / 2026 | Campaign Performance | Business owner |
+>
+> We would like to ask you to complete the following steps:
+>
+> 1. Review to identify what reports can be removed and what reports should be moved to the new owner
+> 2. Assign the reports you want to keep to the new owners.
+>
+> Please note that when you change the report owner, you should reenter and reserve the credentials to the data connection.
+>
+> If you need any assistance with the steps, you can contact our team using the link.
+>
+> In case that required information isn't provided, all content owned by the employee will be moved to your personal folder, and you will be assigned as the owner of the reports.
+>
+> For content where the employee is a business owner, please specify a new business owner in the content description.
+>
+> Best regards,
+> Your team
+
+Within each site (sites are sorted by name), projects are listed first, followed by workbooks grouped by project. In the email, the site, type, and location cells of a workbook group are merged.
 
 ## Usage
 

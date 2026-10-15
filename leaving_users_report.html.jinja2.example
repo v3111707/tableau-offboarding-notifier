@@ -53,29 +53,40 @@
             <b>{{ site_name }}</b>: {{ resources.user_content_url }} <br>
         {% endfor %}
         <br><br>
-        On the Tableau server, the employee is the owner of the reports
+        On the Tableau server, the employee is the owner and/or business owner of the following content:
     </p>
 </div>
+{% set role_names = {"owner": "Owner", "business_owner": "Business owner"} %}
 <table>
     <tr>
         <th>Site name</th>
-        <th>Project name</th>
-        <th>Report name</th>
+        <th>Type</th>
+        <th>Location</th>
+        <th>Name</th>
+        <th>Role</th>
     </tr>
-    {% for site_name, resources in tableau_resources.items() %}
-        {% for wb in resources.workbooks %}
+    {% for site_name, resources in tableau_resources | dictsort %}
+        {% for pr in resources.projects | sort(attribute="path,name") %}
             <tr>
                 <td>{{ site_name }}</td>
-                <td>{{ wb.project_name }}</td>
-                <td>{{ wb.name }}</td>
+                <td>Project</td>
+                <td>{{ pr.path }}</td>
+                <td><b>{{ pr.name }}</b></td>
+                <td>{% for role in pr.roles %}{{ role_names[role] }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
             </tr>
         {% endfor %}
-        {% for pr in resources.projects %}
-            <tr>
-                <td>{{ site_name }}</td>
-                <td>{{ pr.path }} / <b>{{ pr.name }} </b></td>
-                <td>Owner of the project</td>
-            </tr>
+        {% for project_path, workbooks in resources.workbooks | sort(attribute="project_path,name") | groupby("project_path") %}
+            {% for wb in workbooks %}
+                <tr>
+                    {% if loop.first %}
+                        <td rowspan="{{ workbooks | length }}" style="vertical-align: top">{{ site_name }}</td>
+                        <td rowspan="{{ workbooks | length }}" style="vertical-align: top">Workbook</td>
+                        <td rowspan="{{ workbooks | length }}" style="vertical-align: top">{{ project_path }}</td>
+                    {% endif %}
+                    <td>{{ wb.name }}</td>
+                    <td>{% for role in wb.roles %}{{ role_names[role] }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+                </tr>
+            {% endfor %}
         {% endfor %}
     {% endfor %}
 </table>
@@ -93,8 +104,10 @@
     {# Replace the link below with your own support channel URL #}
     <a href="https://your-support-channel-url">using the link.</a>
     <br><br>
-    In case that required information isn't provided, all user's content will be moved to your personal folder,
+    In case that required information isn't provided, all content owned by the employee will be moved to your personal folder,
     and you will be assigned as the owner of the reports.
+    <br><br>
+    For content where the employee is a business owner, please specify a new business owner in the content description.
     <br><br>
     Best regards,
     <br>
