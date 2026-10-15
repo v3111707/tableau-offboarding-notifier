@@ -65,17 +65,8 @@
         <th>Name</th>
         <th>Role</th>
     </tr>
-    {% for site_name, resources in tableau_resources.items() %}
-        {% for wb in resources.workbooks %}
-            <tr>
-                <td>{{ site_name }}</td>
-                <td>Workbook</td>
-                <td>{{ wb.project_path }}</td>
-                <td>{{ wb.name }}</td>
-                <td>{% for role in wb.roles %}{{ role_names[role] }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
-            </tr>
-        {% endfor %}
-        {% for pr in resources.projects %}
+    {% for site_name, resources in tableau_resources | dictsort %}
+        {% for pr in resources.projects | sort(attribute="path,name") %}
             <tr>
                 <td>{{ site_name }}</td>
                 <td>Project</td>
@@ -83,6 +74,19 @@
                 <td><b>{{ pr.name }}</b></td>
                 <td>{% for role in pr.roles %}{{ role_names[role] }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
             </tr>
+        {% endfor %}
+        {% for project_path, workbooks in resources.workbooks | sort(attribute="project_path,name") | groupby("project_path") %}
+            {% for wb in workbooks %}
+                <tr>
+                    {% if loop.first %}
+                        <td rowspan="{{ workbooks | length }}" style="vertical-align: top">{{ site_name }}</td>
+                        <td rowspan="{{ workbooks | length }}" style="vertical-align: top">Workbook</td>
+                        <td rowspan="{{ workbooks | length }}" style="vertical-align: top">{{ project_path }}</td>
+                    {% endif %}
+                    <td>{{ wb.name }}</td>
+                    <td>{% for role in wb.roles %}{{ role_names[role] }}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+                </tr>
+            {% endfor %}
         {% endfor %}
     {% endfor %}
 </table>

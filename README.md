@@ -180,8 +180,9 @@ The template receives the full user record plus these important fields:
 >
 > | Site name | Type | Location | Name | Role |
 > |-----------|------|----------|------|------|
-> | Default | Workbook | Home / Sales | Sales Overview | Owner, Business owner |
 > | Default | Project | Home / Sales | **Regional Reports** | Owner |
+> | Default | Workbook | Home / Sales | Churn Analysis | Owner |
+> | | | | Sales Overview | Owner, Business owner |
 > | Marketing | Workbook | Home / Campaigns / 2026 | Campaign Performance | Business owner |
 >
 > We would like to ask you to complete the following steps:
@@ -199,6 +200,8 @@ The template receives the full user record plus these important fields:
 >
 > Best regards,
 > Your team
+
+Within each site (sites are sorted by name), projects are listed first, followed by workbooks grouped by project. In the email, the site, type, and location cells of a workbook group are merged.
 
 ## Usage
 
