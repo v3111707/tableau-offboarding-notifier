@@ -432,6 +432,7 @@ class SFUser(TypedDict):
 class TableauWorkbook(TypedDict):
     name: str
     project_name: str
+    project_path: str  # e.g. "Home / Analytics / Finance"
     roles: list[ResourceRole]
 
 
@@ -797,7 +798,16 @@ def cli(
                     log.debug(f"[{site.name}] workbook '{wb.project_name} / {wb.name}': {username} is {role}")
                     wb_item = workbooks_by_user[username].setdefault(
                         wb.id,
-                        {"name": wb.name, "project_name": wb.project_name, "roles": []},
+                        {
+                            "name": wb.name,
+                            "project_name": wb.project_name,
+                            "project_path": (
+                                f"{project_id_path[wb.project_id]} / {wb.project_name}"
+                                if wb.project_id in project_id_path
+                                else wb.project_name
+                            ),
+                            "roles": [],
+                        },
                     )
                     if role not in wb_item["roles"]:
                         wb_item["roles"].append(role)
